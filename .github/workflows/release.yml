@@ -1,0 +1,149 @@
+name: Publish reviewed AHK prerelease
+
+# The push trigger is limited to the owner's initial requested publication.
+# Ordinary script/README pushes do not publish. Later releases need a fresh
+# owner request, reviewed version/hash updates and a manual workflow dispatch.
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/release.yml]
+
+permissions: {}
+
+concurrency:
+  group: dandyrecruiterahk-v0.1.0-beta.1
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'nutiler/dandyrecruiterahk' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 0.1.0-beta.1 prerelease')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Validate source, attach script and publish beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: python3 {0}
+        run: |
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repo = "nutiler/dandyrecruiterahk"
+          version = "0.1.0-beta.1"
+          tag = "v" + version
+          filename = "DandyRecruitUp.ahk"
+          expected = "62f794adeae543cc38f3a9bd3d5fc4445745c58316027bad9973a0d76565e1ac"
+          commit = os.environ["RELEASE_COMMIT"]
+          token = os.environ["GH_TOKEN"]
+          assert re.fullmatch(r"[0-9a-f]{40}", commit), "Invalid commit"
+          assert re.fullmatch(r"0\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*", version), "Beta required"
+
+          def api(path, method="GET", payload=None, binary=False):
+              host = "https://uploads.github.com" if binary else "https://api.github.com"
+              url = host + "/repos/" + repo + "/" + path
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": "Bearer " + token,
+                  "User-Agent": "DandyRecruiterAHK-release",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              data = None
+              if payload is not None:
+                  data = payload if binary else json.dumps(payload).encode("utf-8")
+                  headers["Content-Type"] = "application/octet-stream" if binary else "application/json"
+              request = urllib.request.Request(url, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          # Refuse to replace a published release, unresolved draft or old tag.
+          releases = api("releases?per_page=100")
+          assert len(releases) < 100, "Release history requires a complete audit before publication"
+          assert not any(item["tag_name"] == tag for item in releases), "Release/draft already exists; inspect it before retrying"
+          try:
+              api("git/ref/tags/" + tag)
+          except urllib.error.HTTPError as problem:
+              if problem.code != 404:
+                  raise
+          else:
+              raise RuntimeError("Tag already exists; never repoint it")
+
+          tree = api("git/trees/" + commit + "?recursive=1")
+          allowed = {filename, "README.md", ".github/workflows/release.yml"}
+          assert not tree["truncated"], "Incomplete source tree"
+          assert {item["path"] for item in tree["tree"] if item["type"] == "blob"} == allowed, "Unexpected public files"
+          assert all(item["type"] in {"blob", "tree"} and item["mode"] != "120000" for item in tree["tree"]), "Unexpected source entry"
+          source = api("contents/" + filename + "?ref=" + commit)
+          assert source["encoding"] == "base64", "Unexpected source encoding"
+          script = base64.b64decode(source["content"], validate=False)
+          assert hashlib.sha256(script).hexdigest() == expected, "Script differs from reviewed bytes"
+          assert "; DandyRecruiterAHK " + version + " -" in script.decode("utf-8-sig"), "Header version mismatch"
+          readme = api("contents/README.md?ref=" + commit)
+          assert readme["size"] > 0, "Setup instructions missing"
+
+          notes = "\n".join([
+              "Download **DandyRecruitUp.ahk** under **Assets** below. No source-code ZIP is needed.",
+              "",
+              "Optional Windows helper for the separately installed DandyRecruiter addon in WoW Forever. Requires AutoHotkey v2.",
+              "",
+              "1. Install AutoHotkey v2 from https://www.autohotkey.com/.",
+              "2. Download the attached script and double-click it. It starts unarmed.",
+              "3. Bind Recruit next to F8 in WoW, or bind a /dandyrecruit queued macro to F8.",
+              "4. Focus your recruiter client and press Ctrl+Alt+Up to arm.",
+              "5. Tap and release Up once per step: F8, copy, finish copying, open chat, paste, send. Check the line before the final tap.",
+              "",
+              "Esc disarms. Alt-Tab pauses. Holding Up does not repeat. Ten final invite attempts trigger a 30-second pause; scans do not count.",
+              "",
+              "Keyboard /who fallback requires a newer matching addon build. Otherwise, use Scan next or Wingman to obtain Ready candidates first.",
+              "",
+              "[Full setup and controls](https://github.com/" + repo + "/blob/" + commit + "/README.md)",
+              "",
+              "Script SHA-256: `" + expected + "`",
+          ])
+          release = api("releases", "POST", {
+              "tag_name": tag, "target_commitish": commit,
+              "name": "DandyRecruiterAHK " + version,
+              "body": notes, "draft": True, "prerelease": True,
+              "generate_release_notes": False,
+          })
+          release_id = release["id"]
+          asset = api("releases/" + str(release_id) + "/assets?name=" + urllib.parse.quote(filename), "POST", script, binary=True)
+          assert asset["name"] == filename and asset["size"] == len(script), "Asset identity mismatch"
+          assert asset["state"] == "uploaded" and asset.get("digest") == "sha256:" + expected, "Asset hash mismatch"
+          assets = api("releases/" + str(release_id) + "/assets")
+          assert len(assets) == 1 and assets[0]["id"] == asset["id"], "Unexpected release assets"
+          published = api("releases/" + str(release_id), "PATCH", {"draft": False, "prerelease": True, "make_latest": "false"})
+          assert not published["draft"] and published["prerelease"], "Beta publication failed"
+          reference = api("git/ref/tags/" + tag)
+          assert reference["object"]["type"] == "commit" and reference["object"]["sha"] == commit, "Release tag mismatch"
+
+          # Public readback uses no authentication and never executes the file.
+          # Draft URLs can change on publication; re-read the published asset.
+          public_assets = api("releases/" + str(release_id) + "/assets")
+          assert len(public_assets) == 1 and public_assets[0]["id"] == asset["id"], "Published asset mismatch"
+          public_asset = public_assets[0]
+          assert public_asset["name"] == filename and public_asset["size"] == len(script)
+          assert public_asset.get("digest") == "sha256:" + expected
+          download = public_asset["browser_download_url"]
+          assert download == "https://github.com/" + repo + "/releases/download/" + tag + "/" + filename
+          request = urllib.request.Request(download, headers={"User-Agent": "DandyRecruiterAHK-release-verification"})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              downloaded = response.read()
+          assert downloaded == script, "Public download differs from tested source"
+          summary = "Published [" + tag + "](" + published["html_url"] + ") with verified [AHK download](" + download + ").\n\nSHA-256: `" + expected + "`\n"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+              output.write(summary)
+          print(summary)
