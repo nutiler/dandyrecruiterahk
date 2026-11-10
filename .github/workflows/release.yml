@@ -1,8 +1,8 @@
-name: Publish reviewed AHK prerelease
+name: Publish reviewed AHK release
 
-# The push trigger is limited to the owner's initial requested publication.
-# Ordinary script/README pushes do not publish. Later releases need a fresh
-# owner request, reviewed version/hash updates and a manual workflow dispatch.
+# One-time push publication is restricted to this exact owner-requested
+# stable release, reviewed commit message and previous main revision.
+# Restore the manual-only workflow after verified publication.
 "on":
   workflow_dispatch:
   push:
@@ -12,7 +12,7 @@ name: Publish reviewed AHK prerelease
 permissions: {}
 
 concurrency:
-  group: dandyrecruiterahk-v0.1.0-beta.1
+  group: dandyrecruiterahk-v1.1.0
   cancel-in-progress: false
 
 jobs:
@@ -21,13 +21,15 @@ jobs:
       github.repository == 'nutiler/dandyrecruiterahk' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
-       github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 0.1.0-beta.1 prerelease')
+       (github.event_name == 'push' &&
+        github.event.before == '141bf01850a801424f399331d45dd08caac0c95a' &&
+        github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 1.1.0 stable release'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Validate source, attach script and publish beta
+      - name: Validate source, attach script and publish stable
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
@@ -43,14 +45,14 @@ jobs:
           import urllib.request
 
           repo = "nutiler/dandyrecruiterahk"
-          version = "0.1.0-beta.1"
+          version = "1.1.0"
           tag = "v" + version
-          filename = "DandyRecruitUp.ahk"
-          expected = "62f794adeae543cc38f3a9bd3d5fc4445745c58316027bad9973a0d76565e1ac"
+          filename = "DandyRecruiterHelper.ahk"
+          expected = "9041cc0c0f0d99406357ee5b311fb2d699b28d4aefcef574f6b87f643ccae14d"
           commit = os.environ["RELEASE_COMMIT"]
           token = os.environ["GH_TOKEN"]
           assert re.fullmatch(r"[0-9a-f]{40}", commit), "Invalid commit"
-          assert re.fullmatch(r"0\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*", version), "Beta required"
+          assert re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version), "Stable version required"
 
           def api(path, method="GET", payload=None, binary=False):
               host = "https://uploads.github.com" if binary else "https://api.github.com"
@@ -95,17 +97,21 @@ jobs:
           assert readme["size"] > 0, "Setup instructions missing"
 
           notes = "\n".join([
-              "Download **DandyRecruitUp.ahk** under **Assets** below. No source-code ZIP is needed.",
+              "Download **DandyRecruiterHelper.ahk** under **Assets** below. No source-code ZIP is needed.",
               "",
               "Optional Windows helper for the separately installed DandyRecruiter addon in WoW Forever. Requires AutoHotkey v2.",
               "",
               "1. Install AutoHotkey v2 from https://www.autohotkey.com/.",
-              "2. Download the attached script and double-click it. It starts unarmed.",
-              "3. Bind Recruit next to F8 in WoW, or bind a /dandyrecruit queued macro to F8.",
-              "4. Focus your recruiter client and press Ctrl+Alt+Up to arm.",
-              "5. Tap and release Up once per step: F8, copy, finish copying, open chat, paste, send. Check the line before the final tap.",
+              "2. Exit older helper copies, then download the attached script and double-click it. It starts unarmed.",
+              "3. In Setup, choose your Step key/button and WoW action key. Defaults are Up/F8; bind the same action key to Recruit next or /dandyrecruit queued in WoW.",
+              "4. Focus your recruiter client, close chat/copy input and press Ctrl+Alt+your Step key/button to arm.",
+              "5. Press and release your chosen button once per step: Recruit next, copy, finish copying, open chat, paste, send. Check the line before the final press.",
               "",
-              "Esc disarms. Alt-Tab pauses. Holding Up does not repeat. Ten final invite attempts trigger a 30-second pause; scans do not count.",
+              "Esc disarms an active cycle. Alt-Tab pauses. Holding the button does not repeat. Ten final invite attempts trigger a 50-second pause by default; a partial batch resets after 30 idle seconds without shortening an active pause. Scans do not count.",
+              "",
+              "A fresh waiting status uses one separate Escape tap before retrying. Unknown copy, unverifiable paste or an interrupted copy/chat cycle stops input. Close unfinished native input yourself, then explicitly re-arm; stopped attempt totals and active cooldowns are retained.",
+              "",
+              "Use tray Setup to change controls or the optional ten-attempt pause. Saving disarms every client. Use matching DandyRecruiter addon builds; the addon is installed separately.",
               "",
               "Keyboard /who fallback requires a newer matching addon build. Otherwise, use Scan next or Wingman to obtain Ready candidates first.",
               "",
@@ -116,7 +122,7 @@ jobs:
           release = api("releases", "POST", {
               "tag_name": tag, "target_commitish": commit,
               "name": "DandyRecruiterAHK " + version,
-              "body": notes, "draft": True, "prerelease": True,
+              "body": notes, "draft": True, "prerelease": False,
               "generate_release_notes": False,
           })
           release_id = release["id"]
@@ -125,8 +131,9 @@ jobs:
           assert asset["state"] == "uploaded" and asset.get("digest") == "sha256:" + expected, "Asset hash mismatch"
           assets = api("releases/" + str(release_id) + "/assets")
           assert len(assets) == 1 and assets[0]["id"] == asset["id"], "Unexpected release assets"
-          published = api("releases/" + str(release_id), "PATCH", {"draft": False, "prerelease": True, "make_latest": "false"})
-          assert not published["draft"] and published["prerelease"], "Beta publication failed"
+          published = api("releases/" + str(release_id), "PATCH", {"draft": False, "prerelease": False, "make_latest": "true"})
+          assert published["id"] == release_id and published["tag_name"] == tag, "Published release identity mismatch"
+          assert published["draft"] is False and published["prerelease"] is False, "Stable publication failed"
           reference = api("git/ref/tags/" + tag)
           assert reference["object"]["type"] == "commit" and reference["object"]["sha"] == commit, "Release tag mismatch"
 
@@ -143,7 +150,24 @@ jobs:
           with urllib.request.urlopen(request, timeout=30) as response:
               downloaded = response.read()
           assert downloaded == script, "Public download differs from tested source"
-          summary = "Published [" + tag + "](" + published["html_url"] + ") with verified [AHK download](" + download + ").\n\nSHA-256: `" + expected + "`\n"
+
+          # Verify the stable latest-release entry and its convenience download
+          # without forwarding the workflow credential to either public link.
+          request = urllib.request.Request("https://api.github.com/repos/" + repo + "/releases/latest", headers={
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "DandyRecruiterAHK-release-verification",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          with urllib.request.urlopen(request, timeout=30) as response:
+              latest = json.load(response)
+          assert latest["id"] == release_id and latest["tag_name"] == tag, "Latest release identity mismatch"
+          assert latest["draft"] is False and latest["prerelease"] is False, "Latest release is not stable"
+          latest_download = "https://github.com/" + repo + "/releases/latest/download/" + filename
+          request = urllib.request.Request(latest_download, headers={"User-Agent": "DandyRecruiterAHK-release-verification"})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              downloaded_latest = response.read()
+          assert downloaded_latest == script, "Latest download differs from tested source"
+          summary = "Published stable [" + tag + "](" + published["html_url"] + ") with verified [versioned AHK download](" + download + ") and [latest AHK download](" + latest_download + ").\n\nSHA-256: `" + expected + "`\n"
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
               output.write(summary)
           print(summary)
