@@ -1,13 +1,9 @@
 name: Publish reviewed AHK release
 
-# One-time push publication is restricted to this exact owner-requested
-# stable release, reviewed commit message and previous main revision.
-# Restore the manual-only workflow after verified publication.
+# Publication requires a fresh owner request and manual workflow dispatch.
+# Pushing source, README or workflow changes never publishes a release.
 "on":
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/release.yml]
 
 permissions: {}
 
@@ -20,10 +16,7 @@ jobs:
     if: >-
       github.repository == 'nutiler/dandyrecruiterahk' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.before == '141bf01850a801424f399331d45dd08caac0c95a' &&
-        github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 1.1.0 stable release'))
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
