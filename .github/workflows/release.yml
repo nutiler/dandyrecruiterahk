@@ -1,13 +1,9 @@
 name: Publish reviewed AHK release
 
-# One-time push publication is restricted to this exact owner-requested
-# stable release, reviewed commit message and previous main revision.
-# Restore the manual-only workflow after verified publication.
+# Publication requires a fresh owner request and manual workflow dispatch.
+# Pushing source, README or workflow changes never publishes a release.
 "on":
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/release.yml]
 
 permissions: {}
 
@@ -20,10 +16,7 @@ jobs:
     if: >-
       github.repository == 'nutiler/dandyrecruiterahk' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.before == '0447a240ba18165b4104059c11adba5daeab8cba' &&
-        github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 1.1.1 stable release'))
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -175,15 +168,10 @@ jobs:
               assert downloaded == files[name][0], "Public download differs from tested source"
               downloads[name] = download
 
-          # Verify the stable latest-release entry and its convenience download
-          # without forwarding the workflow credential to either public link.
-          request = urllib.request.Request("https://api.github.com/repos/" + repo + "/releases/latest", headers={
-              "Accept": "application/vnd.github+json",
-              "User-Agent": "DandyRecruiterAHK-release-verification",
-              "X-GitHub-Api-Version": "2022-11-28",
-          })
-          with urllib.request.urlopen(request, timeout=30) as response:
-              latest = json.load(response)
+          # Read API metadata with the existing temporary credential to avoid
+          # shared-runner public API limits. Both script downloads remain
+          # unauthenticated and never receive the workflow credential.
+          latest = api("releases/latest")
           assert latest["id"] == release_id and latest["tag_name"] == tag, "Latest release identity mismatch"
           assert latest["draft"] is False and latest["prerelease"] is False, "Latest release is not stable"
           for name, (payload, digest) in files.items():
