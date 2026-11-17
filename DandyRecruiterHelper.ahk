@@ -2,14 +2,16 @@
 #SingleInstance Force
 #MaxThreadsPerHotkey 1
 
-; DandyRecruiterAHK 1.1.0 - optional Windows helper for DandyRecruiter.
+; DandyRecruiterAHK 1.1.1 - optional Windows helper for DandyRecruiter.
 ; Copyright (c) 2026 Dandy. All rights reserved.
 ; Compatible with DandyRecruiter 1.1.0 on WoW Forever.
+; Preventive pacing requires the matching newer addon; published addon 1.1.0
+; provides native-error recovery only. This helper has no separate limiter.
 ; Source and version history: https://github.com/nutiler/dandyrecruiterahk
 ;
 ; EASY SETUP
 ; 1. Install AutoHotkey v2 from https://www.autohotkey.com/.
-; 2. Exit old helper copies, then double-click DandyRecruiterHelper.ahk.
+; 2. Exit all other helper copies, then double-click your chosen download.
 ; 3. Setup lets you choose a Step key/button and WoW Recruit next key.
 ;    Defaults are Up and F8. Matching DandyRecruiter builds provide F8.
 ;    For a custom key, bind the SAME key to Recruit next in WoW under
@@ -17,44 +19,55 @@
 ;    an action button containing /dandyrecruit queued.
 ; 4. Save, focus the recruiter client, close chat/copy input and press
 ;    Ctrl+Alt+your Step key/button to arm that client. Esc disarms it.
-; 5. Tap AND RELEASE the Step key once for each separate action: Recruit next,
-;    Ctrl+C, Enter (finish copying), Enter (open chat), Ctrl+V, Enter (send).
-;    Inspect the line before the final tap. Holding the button never repeats.
+; 5. A floating button appears for the active armed client. Left-click it once
+;    for each separate action, or use the Step key: Recruit next, Ctrl+C,
+;    Enter (finish copying), Enter (open chat), Ctrl+V, Enter (send).
+;    Inspect the line before the final click. Holding never repeats; clicks
+;    during a running step are discarded. The tray can hide/show the button.
 ; A copied waiting status is not an invite or command: the next tap sends
 ; Escape only, then another tap retries Recruit next when ready.
 ; A failed or unknown copy stops the workflow without sending Escape.
 ; Close unfinished chat/copy input yourself, then press Ctrl+Alt+your Step
-; key to re-arm. The stopped client keeps its attempt counts and cooldown.
+; key to re-arm. The stopped client keeps its attempt count.
 ; Reopen Setup from the AutoHotkey tray icon. Saving disarms every client;
 ; close unfinished chat/copy input manually before arming again.
 ;
 ; Auto-detects _forever_ installations on any drive. Alt-Tab pauses and each
-; armed client keeps its own step. No input is sent to background windows.
-; Holding either main mouse button pauses steps so camera movement cannot
-; turn copy/paste into game bindings. An interrupted sequence stops until
-; you close unfinished input and explicitly re-arm; camera-only pauses at
-; step one resume after both mouse buttons are released.
-; Setup enables an optional preventive 50-second pause after ten invite attempts by
-; default. Turn that checkbox off to measure the actual server limit; the
-; addon still keeps its native rate-error recovery hold. Scans do not count.
-; A partial batch resets after 30 seconds without an invite; an active
-; 50-second pause always finishes. Batch and total attempts are shown per
-; armed client, not confirmed invitations.
-; The addon supplies the highlighted /ginvite First Last or /who command.
+; armed client tracks its own steps. Ordinary gaps between taps do not reset it.
+; Mouse movement does not affect steps. Taps while a main mouse button is held
+; send nothing. Releasing ordinary mouse input discards an unfinished cycle
+; without sending keys; the next physical tap starts at Recruit next.
+; Close any unfinished native chat/copy input before starting that fresh cycle.
+; The addon owns recruitment pacing and its cooldown display. This helper
+; shows final invite attempts per armed client, not confirmed invitations.
+; A completed cycle stays armed at step one. The attempt count continues.
+; When stopped, clear unfinished game input before clicking the floating
+; button to re-arm. Re-arming itself sends no game action.
+; The addon supplies the highlighted /ginvite First Last, /who or exact /reload command.
 ; Older addon builds without keyboard /who fallback need Scan next/Wingman
 ; to obtain Ready players first. Native server/addon cooldowns still apply.
-; Exit from the tray menu to stop. Setup saves controls and pause choice for this
+; Exit from the tray menu to stop. Setup saves controls for this
 ; Windows user; no account settings, game data or executable are bundled.
-; This optional helper is not required by the addon. Its separate taps and
-; pacing are not a guarantee of approval by Blizzard or CurseForge.
+; This optional helper is not required by the addon. Its separate taps are
+; not a guarantee of approval by Blizzard or CurseForge.
 
-helperBuild := "2026-11-10 stable-1.1.0"
-settings := {stepKey: "Up", actionKey: "F8", pauseAfterTen: true}
+helperBuild := "2026-11-17 stable-1.1.1 simple-steps"
+settings := {stepKey: "Up", actionKey: "F8"}
 inviteMacroKey := "{F8}"
 foreverExe := ""
 cycles := Map()
 stepOwner := 0
 stepHeld := false
+clickOwner := 0
+clickHeld := false
+clickRearm := false
+clickIgnored := false
+clickPanel := 0
+clickPanelButton := 0
+clickPanelStatus := 0
+clickPanelState := 0
+clickPanelVisible := false
+clickPanelEnabled := true
 registeredHotkeys := []
 reconfiguring := false
 hotkeysReady := false
@@ -63,7 +76,6 @@ settingsPath := A_AppData "\DandyRecruiterAHK\settings.ini"
 setupWindow := 0
 setupStep := 0
 setupAction := 0
-setupPause := 0
 setupNotice := 0
 SetKeyDelay(25, 35)
 InitializeHelper()
@@ -101,10 +113,8 @@ NormalizeKey(key, includeMouse := false) {
     throw ValueError("That key is not supported. Choose a key from the list.")
 }
 
-NormalizeConfig(stepKey, actionKey, pauseAfterTen := true) {
-    if Type(pauseAfterTen) != "Integer" || (pauseAfterTen != 0 && pauseAfterTen != 1)
-        throw ValueError("Choose whether to pause after ten invite attempts.")
-    result := {stepKey: NormalizeKey(stepKey, true), actionKey: NormalizeKey(actionKey), pauseAfterTen: pauseAfterTen == 1}
+NormalizeConfig(stepKey, actionKey) {
+    result := {stepKey: NormalizeKey(stepKey, true), actionKey: NormalizeKey(actionKey)}
     if result.stepKey == result.actionKey
         throw ValueError("Choose different Step and Recruit next keys.")
     return result
@@ -120,6 +130,8 @@ HotkeyPlan(config) {
         {context: "step", predicate: CanMarkStep, key: "$*" key, callback: MarkStepDown},
         {context: "tracked", predicate: HasCycles, key: "~$*" key, callback: IgnoreStep},
         {context: "tracked", predicate: HasCycles, key: "~$*" key " Up", callback: ReleaseStep},
+        {context: "click", predicate: CanMarkClick, key: "$*LButton", callback: MarkClickDown},
+        {context: "click-release", predicate: HasClickPress, key: "$*LButton Up", callback: ReleaseClick},
         {context: "armed", predicate: InArmedWindow, key: "~$*LButton", callback: InterruptForMouse},
         {context: "armed", predicate: InArmedWindow, key: "~$*RButton", callback: InterruptForMouse}
     ]
@@ -200,10 +212,7 @@ ReadSettings() {
     try {
         if IniRead(settingsPath, "Helper", "schema", "") != "1"
             throw ValueError("Unknown settings format")
-        pauseValue := IniRead(settingsPath, "Helper", "pauseAfterTen", "1")
-        if Type(pauseValue) != "String" || !RegExMatch(pauseValue, "\A[01]\z")
-            throw ValueError("Invalid saved pause choice")
-        checked := NormalizeConfig(IniRead(settingsPath, "Helper", "stepKey", ""), IniRead(settingsPath, "Helper", "actionKey", ""), pauseValue == "1")
+        checked := NormalizeConfig(IniRead(settingsPath, "Helper", "stepKey", ""), IniRead(settingsPath, "Helper", "actionKey", ""))
         return {config: checked, setup: false, notice: ""}
     } catch {
         return {config: defaults, setup: true, notice: "Saved controls could not be read. Defaults are active until you Save valid choices."}
@@ -212,7 +221,7 @@ ReadSettings() {
 
 WriteSettings(config) {
     global settingsPath
-    config := NormalizeConfig(config.stepKey, config.actionKey, config.HasOwnProp("pauseAfterTen") ? config.pauseAfterTen : true)
+    config := NormalizeConfig(config.stepKey, config.actionKey)
     SplitPath(settingsPath, , &folder)
     DirCreate(folder)
     temporary := settingsPath "." DllCall("GetCurrentProcessId", "UInt") "." A_TickCount ".tmp"
@@ -223,7 +232,6 @@ WriteSettings(config) {
         IniWrite("1", temporary, "Helper", "schema")
         IniWrite(config.stepKey, temporary, "Helper", "stepKey")
         IniWrite(config.actionKey, temporary, "Helper", "actionKey")
-        IniWrite(config.pauseAfterTen ? "1" : "0", temporary, "Helper", "pauseAfterTen")
         FileMove(temporary, settingsPath, true)
     } catch as problem {
         try FileDelete(temporary)
@@ -231,11 +239,11 @@ WriteSettings(config) {
     }
 }
 
-ApplySettings(stepKey, actionKey, pauseAfterTen := true) {
+ApplySettings(stepKey, actionKey) {
     global settings, inviteMacroKey, reconfiguring, hotkeysReady, restartRequired
     if restartRequired
         throw Error("Controls require a restart. Exit and restart the helper before using it.")
-    checked := NormalizeConfig(stepKey, actionKey, pauseAfterTen)
+    checked := NormalizeConfig(stepKey, actionKey)
     previous := settings
     reconfiguring := true
     try {
@@ -274,6 +282,8 @@ InitializeHelper() {
     A_TrayMenu.Delete()
     A_TrayMenu.Add("Setup...", ShowSetup)
     A_TrayMenu.Default := "Setup..."
+    A_TrayMenu.Add("Show click button", ToggleClickPanel)
+    A_TrayMenu.Check("Show click button")
     A_TrayMenu.Add("Disarm all clients", DisarmAllNotice)
     A_TrayMenu.Add()
     A_TrayMenu.Add("Exit", ExitHelper)
@@ -282,7 +292,7 @@ InitializeHelper() {
 }
 
 ShowSetup(notice := "", *) {
-    global setupWindow, setupStep, setupAction, setupPause, setupNotice, settings, helperBuild
+    global setupWindow, setupStep, setupAction, setupNotice, settings, helperBuild
     if !IsObject(setupWindow) {
         setupWindow := Gui("", "DandyRecruiter Helper - Setup - " helperBuild)
         setupWindow.SetFont("s10", "Segoe UI")
@@ -293,8 +303,7 @@ ShowSetup(notice := "", *) {
         setupAction := setupWindow.AddDropDownList("xm y+5 w230", SupportedKeys())
         setupWindow.AddText("xm y+16 w480", "Matching DandyRecruiter builds provide F8 automatically. For another key, bind that same key in WoW: Key Bindings > Dandy Suite > DandyRecruiter. Older builds also support /dandyrecruit queued.")
         setupWindow.AddText("xm y+12 w480", "Ctrl+Alt+your Step key/button arms or resets a stopped recruiter. Close unfinished input first. Esc disarms active cycles; stopped cycles retain counts. Tap and release once per step.")
-        setupPause := setupWindow.AddCheckbox("xm y+14 w480", "Preventive pause: 50 seconds after 10 invite attempts")
-        setupWindow.AddText("xm y+5 w480", "Optional helper pacing. WoW and addon recovery cooldowns still apply when this is off.")
+        setupWindow.AddText("xm y+14 w480", "Recruitment pacing and cooldowns are controlled by DandyRecruiter in WoW.")
         setupNotice := setupWindow.AddText("xm y+12 w480", "")
         setupWindow.AddButton("xm y+16 w110 Default", "Save").OnEvent("Click", SaveSetup)
         setupWindow.AddButton("x+10 w110", "Cancel").OnEvent("Click", HideSetup)
@@ -303,7 +312,6 @@ ShowSetup(notice := "", *) {
     }
     SelectChoice(setupStep, SupportedKeys(true), settings.stepKey)
     SelectChoice(setupAction, SupportedKeys(), settings.actionKey)
-    setupPause.Value := settings.pauseAfterTen
     ; Tray callbacks pass their menu item name; only startup supplies a notice.
     setupNotice.Text := Type(notice) == "String" && notice != "Setup..." ? notice : "Saving disarms all clients. Close unfinished chat/copy input manually before re-arming."
     setupWindow.Show("AutoSize")
@@ -319,8 +327,8 @@ SelectChoice(control, choices, value) {
 }
 
 SaveSetup(*) {
-    global setupWindow, setupStep, setupAction, setupPause, setupNotice
-    try ApplySettings(setupStep.Text, setupAction.Text, setupPause.Value)
+    global setupWindow, setupStep, setupAction, setupNotice
+    try ApplySettings(setupStep.Text, setupAction.Text)
     catch as problem {
         setupNotice.Text := "Not saved: " problem.Message
         return
@@ -336,6 +344,187 @@ HideSetup(*) {
         setupWindow.Hide()
 }
 
+ClickPanelLabel(state) {
+    if state.halted
+        return "Click to re-arm"
+    if state.mousePaused || GetKeyState("RButton", "P")
+        return "Release mouse buttons"
+    if state.recoverFocus
+        return "Finish waiting step"
+    labels := ["1/6  Recruit next", "2/6  Copy command", "3/6  Done copying",
+        "4/6  Open chat", "5/6  Paste command", state.commandKind == "scan" ? "6/6  Send scan" : "6/6  Send invite"]
+    return labels[state.step]
+}
+
+PresentStep(state, text) {
+    global clickPanel, clickPanelButton, clickPanelStatus, clickPanelState, clickPanelVisible, clickPanelEnabled
+    if !IsCurrent(state)
+        return
+    if !clickPanelEnabled {
+        ToolTip(text)
+        return
+    }
+    try {
+        if !IsObject(clickPanel) {
+            ; Keep WoW's native text input focused while the helper is clicked.
+            clickPanel := Gui("+AlwaysOnTop +ToolWindow +E0x08000000 -MinimizeBox -MaximizeBox", "DandyRecruiter")
+            clickPanel.SetFont("s10", "Segoe UI")
+            clickPanelButton := clickPanel.AddButton("w270 h48 -Tabstop", "")
+            clickPanelStatus := clickPanel.AddText("xm y+8 w270 r9", "")
+            clickPanel.OnEvent("Close", HideClickPanelNotice)
+            ; Raw physical Down/Up handlers own stepping. No GUI Click callback
+            ; can advance the same physical release a second time.
+        }
+        clickPanelButton.Text := ClickPanelLabel(state)
+        clickPanelStatus.Text := text
+        if !clickPanelVisible || !IsObject(clickPanelState) || clickPanelState != state {
+            clickPanel.Show("Hide AutoSize")
+            WinGetPos(, , &panelWidth, &panelHeight, "ahk_id " clickPanel.Hwnd)
+            WinGetClientPos(&x, &y, &width, &height, "ahk_id " state.window)
+            clickPanel.Show("NA x" (x + Max(0, width - panelWidth - 20)) " y" (y + Max(0, height - panelHeight - 20)))
+        }
+        clickPanelState := state
+        clickPanelVisible := true
+        ToolTip()
+    } catch {
+        clickPanelEnabled := false
+        try A_TrayMenu.Uncheck("Show click button")
+        HideClickPanel()
+        if IsObject(clickPanel)
+            try clickPanel.Destroy()
+        clickPanel := 0
+        clickPanelButton := 0
+        clickPanelStatus := 0
+        ToolTip(text)
+    }
+}
+
+NeedsClickPanel(state) {
+    global clickPanelEnabled, clickPanelVisible, clickPanelState
+    return clickPanelEnabled && (!clickPanelVisible || !IsObject(clickPanelState) || clickPanelState != state)
+}
+
+HideClickPanel() {
+    global clickPanel, clickPanelState, clickPanelVisible
+    CancelClickPress()
+    if clickPanelVisible && IsObject(clickPanel)
+        clickPanel.Hide()
+    clickPanelState := 0
+    clickPanelVisible := false
+}
+
+HideClickPanelNotice(*) {
+    global clickPanelEnabled
+    clickPanelEnabled := false
+    A_TrayMenu.Uncheck("Show click button")
+    HideClickPanel()
+}
+
+ToggleClickPanel(*) {
+    global clickPanelEnabled
+    clickPanelEnabled := !clickPanelEnabled
+    if clickPanelEnabled
+        A_TrayMenu.Check("Show click button")
+    else {
+        A_TrayMenu.Uncheck("Show click button")
+        HideClickPanel()
+    }
+    state := ActiveCycle()
+    if IsObject(state)
+        ShowStep(state)
+}
+
+IsClickPanelPointer(*) {
+    global clickPanel, clickPanelButton, clickPanelVisible
+    if !clickPanelVisible || !IsObject(clickPanel) || !IsObject(clickPanelButton)
+        return false
+    try {
+        MouseGetPos(, , &window, &control, 2)
+        return window == clickPanel.Hwnd && control == clickPanelButton.Hwnd
+    }
+    return false
+}
+
+CanMarkClick(*) {
+    global clickPanelState
+    state := ActiveCycle()
+    return InArmedWindow() && IsObject(state) && IsCurrent(state)
+        && IsObject(clickPanelState) && clickPanelState == state && IsClickPanelPointer()
+}
+
+HasClickPress(*) {
+    global clickHeld
+    return clickHeld
+}
+
+CancelClickPress(state := 0) {
+    global clickOwner, clickRearm, clickIgnored
+    if !IsObject(state) || (IsObject(clickOwner) && clickOwner == state) {
+        clickOwner := 0
+        clickRearm := false
+        clickIgnored := false
+    }
+}
+
+IsOwnedClickHold(state) {
+    global clickOwner, clickHeld
+    return clickHeld && IsObject(clickOwner) && clickOwner == state && IsCurrent(state)
+        && GetKeyState("LButton", "P") && !GetKeyState("RButton", "P") && IsClickPanelPointer()
+}
+
+MarkClickDown(*) {
+    global clickHeld, clickOwner, clickRearm, clickIgnored, stepOwner, stepHeld
+    if clickHeld
+        return
+    clickHeld := true
+    CancelClickPress()
+    state := ActiveCycle()
+    if !IsObject(state) || !CanMarkClick() || HasModifiers()
+        || IsObject(stepOwner) || stepHeld || GetKeyState("RButton", "P")
+        return
+    if state.busy {
+        ; Recognize the owned mouse hold for the running transaction, but
+        ; discard this extra click instead of queuing another step.
+        clickOwner := state
+        clickIgnored := true
+        return
+    }
+    if RefreshStepIdle(state) || state.mousePaused
+        return
+    clickOwner := state
+    clickRearm := state.halted
+    if !state.halted
+        state.paused := false
+}
+
+ReleaseClick(*) {
+    global clickHeld, clickOwner, clickRearm, clickIgnored
+    state := clickOwner
+    rearm := clickRearm
+    ignored := clickIgnored
+    CancelClickPress()
+    clickHeld := false
+    if ignored || !IsObject(state) || !IsCurrent(state) || !IsClickPanelPointer()
+        || state.busy || HasModifiers() || MouseButtonsDown()
+        return
+    if rearm {
+        RearmCycle(state)
+        return
+    }
+    ReconcileMouse(state)
+    RunStep(state)
+}
+
+ReconcileClickPress() {
+    global clickHeld, clickIgnored, clickOwner
+    ; A busy release callback may suppress another release of that hotkey.
+    ; Retire only the explicitly ignored press when its physical button is up.
+    if clickHeld && !GetKeyState("LButton", "P") && (clickIgnored || !IsObject(clickOwner)) {
+        CancelClickPress()
+        clickHeld := false
+    }
+}
+
 DisarmAll(*) {
     global cycles, stepOwner, stepHeld
     states := []
@@ -345,6 +534,7 @@ DisarmAll(*) {
         Disarm(state)
     stepOwner := 0
     stepHeld := false
+    HideClickPanel()
     SetTimer(WatchFocus, 0)
     ToolTip()
 }
@@ -381,7 +571,7 @@ PauseActive(*) {
 DisarmActive(*) {
     state := ActiveCycle()
     ; Physical Escape still reaches WoW, but must not erase a stopped
-    ; client's pacing before its explicit reset/re-arm chord.
+    ; client's attempt count before its explicit reset/re-arm chord.
     if IsObject(state) && state.halted
         return
     Disarm(state)
@@ -441,13 +631,13 @@ IsCurrent(state) {
     return OwnsCycle(state) && IsTrackedWindow(state) && WinActive("ahk_id " state.window)
 }
 
-CanSend(state) => IsCurrent(state) && !state.halted && !state.paused && !state.mousePaused && !MouseButtonsDown()
+CanSend(state) => IsCurrent(state) && !state.halted && !state.paused && !state.mousePaused && (!MouseButtonsDown() || (state.busy && IsOwnedClickHold(state)))
 
 ClearHaltedPhase(state) {
     if !OwnsCycle(state) || !state.halted || state.busy
         return false
     changed := state.step != 1 || state.copied != "" || state.commandKind != ""
-        || state.recoverFocus || state.waitingStatus || state.mousePaused || state.mouseReset
+        || state.recoverFocus || state.waitingStatus || state.mousePaused || state.mouseReset || state.mouseUnsafe
     state.step := 1
     state.copied := ""
     state.commandKind := ""
@@ -455,6 +645,7 @@ ClearHaltedPhase(state) {
     state.waitingStatus := false
     state.mousePaused := false
     state.mouseReset := false
+    state.mouseUnsafe := false
     return changed
 }
 
@@ -467,6 +658,7 @@ HaltCycle(state, reason) {
     state.halted := true
     state.haltReason := reason
     state.paused := true
+    CancelClickPress(state)
     ClearHaltedPhase(state)
     ShowStep(state)
 }
@@ -482,6 +674,7 @@ PauseForMouse(state) {
     if IsObject(stepOwner) && stepOwner == state
         stepOwner := 0
     state.mousePaused := true
+    CancelClickPress(state)
     state.paused := true
     ; An input callback may still need its original step/kind to count a
     ; final Enter already injected. Reconcile only after that callback ends.
@@ -489,7 +682,7 @@ PauseForMouse(state) {
         state.mouseReset := true
 }
 
-InterruptForMouse(*) {
+InterruptForMouse(hotkey := "", *) {
     state := ActiveCycle()
     if !IsObject(state) || !IsCurrent(state)
         return
@@ -502,6 +695,8 @@ ReconcileMouse(state) {
         return false
     if state.halted
         return ClearHaltedPhase(state)
+    if IsOwnedClickHold(state)
+        return false
     if MouseButtonsDown() {
         if IsCurrent(state)
             PauseForMouse(state)
@@ -510,11 +705,30 @@ ReconcileMouse(state) {
     if state.busy || !state.mousePaused
         return false
     if state.mouseReset {
-        HaltCycle(state, "Mouse movement interrupted an input step.")
-        return true
+        ; Ordinary mouse input abandons this command. Releasing a mouse
+        ; button sends nothing; a new physical step must prepare fresh input.
+        state.step := 1
+        state.copied := ""
+        state.commandKind := ""
+        state.recoverFocus := false
+        state.waitingStatus := false
     }
     state.mousePaused := false
+    state.paused := false
     state.mouseReset := false
+    state.mouseUnsafe := false
+    return true
+}
+
+RearmCycle(state) {
+    if !OwnsCycle(state) || !state.halted || state.busy || !IsCurrent(state)
+        return false
+    ClearHaltedPhase(state)
+    state.halted := false
+    state.haltReason := ""
+    state.paused := false
+    state.lastStepAt := A_TickCount
+    ShowStep(state)
     return true
 }
 
@@ -530,18 +744,13 @@ ToggleCycle(*) {
     arming := true
     try {
         stepOwner := 0
+        CancelClickPress()
         stepHeld := GetKeyState(armKey, "P")
         if cycles.Has(hwnd) {
             previous := cycles[hwnd]
             wasTracked := IsTrackedWindow(previous)
             if wasTracked && previous.halted {
-                if !previous.busy {
-                    ClearHaltedPhase(previous)
-                    previous.halted := false
-                    previous.haltReason := ""
-                    previous.paused := false
-                }
-                ShowStep(previous)
+                RearmCycle(previous)
                 return
             }
             Disarm(previous)
@@ -551,9 +760,9 @@ ToggleCycle(*) {
         state := {
             window: hwnd, pid: WinGetPID("ahk_id " hwnd), step: 1,
             busy: false, copied: "", commandKind: "", paused: false, recoverFocus: false, waitingStatus: false,
-            mousePaused: false, mouseReset: false,
+            mousePaused: false, mouseReset: false, mouseUnsafe: false,
             halted: false, haltReason: "",
-            batchInvites: 0, inviteAttempts: 0, holdUntil: 0, lastInviteAt: -1
+            inviteAttempts: 0, lastStepAt: A_TickCount
         }
         cycles[hwnd] := state
         SetTimer(WatchFocus, 75)
@@ -585,31 +794,33 @@ WatchFocus() {
     global cycles, stepOwner, stepHeld, settings
     if !IsObject(stepOwner) && !GetKeyState(settings.stepKey, "P")
         stepHeld := false
+    ReconcileClickPress()
     closed := []
     for hwnd, state in cycles {
         if !IsTrackedWindow(state) {
             closed.Push(state)
         } else {
             mouseChanged := ReconcileMouse(state)
-            ; The key callback owns counter writes until its step completes.
-            pacingChanged := !state.busy && RefreshInvitePacing(state)
+            idleChanged := RefreshStepIdle(state)
             if !WinActive("ahk_id " hwnd)
                 PauseCycle(state)
             else if state.halted {
-                if !state.busy && (pacingChanged || mouseChanged)
+                if !state.busy && (mouseChanged || idleChanged || NeedsClickPanel(state))
                     ShowStep(state)
             } else if state.paused && !state.busy && !state.mousePaused && !MouseButtonsDown() && !GetKeyState("Alt", "P") {
                 state.paused := false
                 ShowStep(state)
-            } else if (pacingChanged || mouseChanged) && !state.busy && !state.paused {
+            } else if (mouseChanged || idleChanged) && !state.busy && !state.paused {
                 ShowStep(state)
             }
         }
     }
     for _, state in closed
         Disarm(state)
-    if !InArmedWindow()
+    if !InArmedWindow() {
+        HideClickPanel()
         ToolTip()
+    }
 }
 
 PauseCycle(state) {
@@ -618,6 +829,7 @@ PauseCycle(state) {
         return
     if IsObject(stepOwner) && stepOwner == state
         stepOwner := 0
+    CancelClickPress(state)
     if !state.paused {
         state.paused := true
         if !InArmedWindow()
@@ -637,10 +849,12 @@ Disarm(state, reason := "") {
         return
     if IsObject(stepOwner) && stepOwner == state
         stepOwner := 0
+    CancelClickPress(state)
     cycles.Delete(state.window)
     if !HasCycles()
         SetTimer(WatchFocus, 0)
     if !InArmedWindow() {
+        HideClickPanel()
         ToolTip(reason)
         if reason != ""
             SetTimer(HideIdleTip, -3500)
@@ -661,6 +875,7 @@ MarkStepDown(*) {
     if !IsObject(state) || !IsCurrent(state) || state.busy
         return
     ReconcileMouse(state)
+    RefreshStepIdle(state)
     if state.halted {
         ShowStep(state)
         return
@@ -678,9 +893,17 @@ ReleaseStep(*) {
     state := stepOwner
     stepOwner := 0
     stepHeld := false
-    if !IsObject(state) || !CanSend(state) || HasModifiers() || state.busy
+    if !IsObject(state)
+        return
+    RunStep(state)
+}
+
+RunStep(state) {
+    RefreshStepIdle(state)
+    if !CanSend(state) || HasModifiers() || state.busy
         return
 
+    state.lastStepAt := A_TickCount
     state.busy := true
     try Advance(state)
     catch {
@@ -688,6 +911,7 @@ ReleaseStep(*) {
             Disarm(state, IsCurrent(state) ? "Stopped. Check WoW and re-arm with " ArmLabel() "." : "")
     } finally {
         state.busy := false
+        RefreshStepIdle(state)
         ClearHaltedPhase(state)
     }
 }
@@ -709,36 +933,18 @@ SendStepInput(state, keys) {
     return false
 }
 
-RefreshInvitePacing(state) {
-    now := A_TickCount
-    ; A full batch's 50-second hold outranks the partial-batch idle reset.
-    if state.holdUntil > now
-        return false
-    if state.holdUntil > 0 {
-        state.holdUntil := 0
-        state.batchInvites := 0
-        state.lastInviteAt := -1
-        return true
-    }
-    if state.batchInvites > 0 && state.lastInviteAt >= 0 && now - state.lastInviteAt >= 30000 {
-        state.batchInvites := 0
-        state.lastInviteAt := -1
-        return true
-    }
+RefreshStepIdle(state) {
+    ; A physical step advances the workflow; elapsed idle time sends nothing
+    ; and does not discard the player's current copy/chat stage.
     return false
 }
 
 Advance(state) {
-    global inviteMacroKey, settings
+    global inviteMacroKey
     if !CanSend(state)
         return
     if state.recoverFocus && !state.waitingStatus {
         HaltCycle(state, "The current input focus could not be confirmed.")
-        return
-    }
-    RefreshInvitePacing(state)
-    if state.holdUntil > 0 {
-        ShowStep(state)
         return
     }
     if state.recoverFocus {
@@ -781,13 +987,8 @@ Advance(state) {
         case 3, 4, 6:
             if !SendStepInput(state, "{Enter}")
                 return
-            if state.step == 6 && state.commandKind == "invite" {
-                state.batchInvites += 1
+            if state.step == 6 && state.commandKind == "invite"
                 state.inviteAttempts += 1
-                state.lastInviteAt := A_TickCount
-                if settings.pauseAfterTen && state.batchInvites >= 10
-                    state.holdUntil := A_TickCount + 50000
-            }
         case 5:
             if !PasteCommand(state) {
                 if CanSend(state)
@@ -808,6 +1009,8 @@ Advance(state) {
 ClipboardSequence() => DllCall("User32\GetClipboardSequenceNumber", "UInt")
 
 CommandKind(text) {
+    if text == "/reload"
+        return "reload"
     if StrLen(text) > 235 || RegExMatch(text, "[\x00-\x1F\x7F]")
         return ""
     if RegExMatch(text, "\A/ginvite [\p{L}][\p{L}\p{M}'’-]* [\p{L}][\p{L}\p{M}'’-]*\z")
@@ -883,37 +1086,32 @@ ShowStep(state, note := "") {
     if !IsCurrent(state)
         return
     if state.halted {
-        ToolTip("STOPPED: " state.haltReason "`nClose unfinished WoW chat/copy input yourself.`nThen press " ArmLabel() " to re-arm this client.`nBatch attempts: " state.batchInvites "/10`nInvite attempts: " state.inviteAttempts "`nCounts and cooldown are retained. Escape only closes WoW input.")
+        PresentStep(state, "STOPPED: " state.haltReason "`nClose unfinished WoW chat/copy input yourself.`nThen click to re-arm or press " ArmLabel() ".`nInvite attempts: " state.inviteAttempts "`nThe attempt count is retained. Escape only closes WoW input.")
         return
     }
-    if state.mousePaused || MouseButtonsDown() {
-        ToolTip("Recruiting paused for mouse movement.`nRelease both left and right mouse buttons before tapping " settings.stepKey ".`nBatch attempts: " state.batchInvites "/10`nInvite attempts: " state.inviteAttempts "`nEsc disarms")
+    if state.mousePaused || (MouseButtonsDown() && !IsOwnedClickHold(state)) {
+        PresentStep(state, "Release the held mouse buttons before tapping " settings.stepKey ".`nAn unfinished cycle restarts at Recruit next after release; no cleanup keys are sent.`nClose unfinished native input before starting again.`nInvite attempts: " state.inviteAttempts "`nEsc disarms")
         return
     }
     if !CanSend(state)
         return
-    remaining := Max(0, Ceil((state.holdUntil - A_TickCount) / 1000))
-    if remaining > 0 {
-        ToolTip("Helper pacing pause: " remaining "s remaining.`nBatch attempts: " state.batchInvites "/10`nInvite attempts: " state.inviteAttempts "`nTen invite attempts in this batch. Tap " settings.stepKey " after the pause.`nEsc disarms")
-        return
-    }
     if state.recoverFocus {
         heading := state.waitingStatus ? "DandyRecruiter is waiting. Check the Inviter for the reason and countdown." : "No fresh command copied."
         action := state.waitingStatus
             ? "Tap " settings.stepKey " to finish the waiting step (Escape)."
             : "Recovery: tap " settings.stepKey " for Escape."
-        ToolTip(heading "`n" action "`nThen tap again for Recruit next (" settings.actionKey ").`nBatch attempts: " state.batchInvites "/10`nInvite attempts: " state.inviteAttempts "`nEsc disarms")
+        PresentStep(state, heading "`n" action "`nThen tap again for Recruit next (" settings.actionKey ").`nInvite attempts: " state.inviteAttempts "`nEsc disarms")
         return
     }
     labels := [
         "Recruit next or prepare scan (" settings.actionKey ")",
-        "Copy the highlighted /ginvite or /who command",
+        "Copy the highlighted invite, scan or reload command",
         "Finish copying (panel stays open)",
         "Open WoW chat",
         "Paste the copied command",
-        "Check the chat line, then send the invite or scan"
+        "Check the chat line, then send the reviewed command"
     ]
     if note != ""
         note .= "`n"
-    ToolTip(settings.stepKey " " state.step "/6  " labels[state.step] "`nBatch attempts: " state.batchInvites "/10`nInvite attempts: " state.inviteAttempts "`n" note "Esc disarms")
+    PresentStep(state, settings.stepKey " " state.step "/6  " labels[state.step] "`nInvite attempts: " state.inviteAttempts "`n" note "Esc disarms")
 }
