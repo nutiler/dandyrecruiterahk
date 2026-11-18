@@ -2,11 +2,11 @@
 #SingleInstance Force
 #MaxThreadsPerHotkey 1
 
-; DandyRecruiterAHK 1.1.1 - optional Windows helper for DandyRecruiter.
+; DandyRecruiterAHK 1.1.2 - optional Windows helper for DandyRecruiter.
 ; Copyright (c) 2026 Dandy. All rights reserved.
-; Compatible with DandyRecruiter 1.1.0 on WoW Forever.
-; Preventive pacing requires the matching newer addon; published addon 1.1.0
-; provides native-error recovery only. This helper has no separate limiter.
+; Stable helper for DandyRecruiter 1.4.0 or later on WoW Forever.
+; The addon owns eligibility and preventive pacing; this helper has no limiter.
+; Prior tagged helper versions remain available on GitHub.
 ; Source and version history: https://github.com/nutiler/dandyrecruiterahk
 ;
 ; EASY SETUP
@@ -26,14 +26,17 @@
 ;    during a running step are discarded. The tray can hide/show the button.
 ; A copied waiting status is not an invite or command: the next tap sends
 ; Escape only, then another tap retries Recruit next when ready.
-; A failed or unknown copy stops the workflow without sending Escape.
-; Close unfinished chat/copy input yourself, then press Ctrl+Alt+your Step
-; key to re-arm. The stopped client keeps its attempt count.
+; A missing/empty copy discards the unfinished command and stays armed at step one.
+; The next physical tap retries Recruit next; timeout recovery sends no key.
+; Fresh unrecognized copied text still stops without sending Escape. Close
+; unfinished input yourself, then re-arm. Attempt counts are retained.
 ; Reopen Setup from the AutoHotkey tray icon. Saving disarms every client;
 ; close unfinished chat/copy input manually before arming again.
 ;
-; Auto-detects _forever_ installations on any drive. Alt-Tab pauses and each
-; armed client tracks its own steps. Ordinary gaps between taps do not reset it.
+; Auto-detects _forever_ installations on any drive. Each client owns its state.
+; Alt-Tab retires pre-chat work; the next tap requests a fresh action. Losing
+; focus while native chat could be open stops for manual cleanup and re-arming.
+; Ordinary gaps between taps do not reset the current foreground cycle.
 ; Mouse movement does not affect steps. Taps while a main mouse button is held
 ; send nothing. Releasing ordinary mouse input discards an unfinished cycle
 ; without sending keys; the next physical tap starts at Recruit next.
@@ -41,6 +44,8 @@
 ; The addon owns recruitment pacing and its cooldown display. This helper
 ; shows final invite attempts per armed client, not confirmed invitations.
 ; A completed cycle stays armed at step one. The attempt count continues.
+; Brief input settling gives WoW time to update before the next separate tap.
+; Transient clipboard reads retry without sending another copy key.
 ; When stopped, clear unfinished game input before clicking the floating
 ; button to re-arm. Re-arming itself sends no game action.
 ; The addon supplies the highlighted /ginvite First Last, /who or exact /reload command.
@@ -51,7 +56,7 @@
 ; This optional helper is not required by the addon. Its separate taps are
 ; not a guarantee of approval by Blizzard or CurseForge.
 
-helperBuild := "2026-11-17 stable-1.1.1 simple-steps"
+helperBuild := "2026-11-17 stable-1.1.2 step-engine"
 settings := {stepKey: "Up", actionKey: "F8"}
 inviteMacroKey := "{F8}"
 foreverExe := ""
@@ -352,7 +357,8 @@ ClickPanelLabel(state) {
     if state.recoverFocus
         return "Finish waiting step"
     labels := ["1/6  Recruit next", "2/6  Copy command", "3/6  Done copying",
-        "4/6  Open chat", "5/6  Paste command", state.commandKind == "scan" ? "6/6  Send scan" : "6/6  Send invite"]
+        "4/6  Open chat", "5/6  Paste command", state.commandKind == "scan" ? "6/6  Send scan"
+            : state.commandKind == "reload" ? "6/6  Reload UI" : "6/6  Send invite"]
     return labels[state.step]
 }
 
@@ -489,9 +495,13 @@ MarkClickDown(*) {
         clickIgnored := true
         return
     }
-    if RefreshStepIdle(state) || state.mousePaused
-        return
+    ; Recognize this owned press before reconciling physical mouse state.
     clickOwner := state
+    ReconcileCycle(state)
+    if state.mousePaused {
+        CancelClickPress(state)
+        return
+    }
     clickRearm := state.halted
     if !state.halted
         state.paused := false
@@ -511,7 +521,7 @@ ReleaseClick(*) {
         RearmCycle(state)
         return
     }
-    ReconcileMouse(state)
+    ReconcileCycle(state)
     RunStep(state)
 }
 
@@ -631,18 +641,38 @@ IsCurrent(state) {
     return OwnsCycle(state) && IsTrackedWindow(state) && WinActive("ahk_id " state.window)
 }
 
-CanSend(state) => IsCurrent(state) && !state.halted && !state.paused && !state.mousePaused && (!MouseButtonsDown() || (state.busy && IsOwnedClickHold(state)))
+CanSend(state) => IsCurrent(state) && !state.halted && !state.paused && !state.mousePaused && !HasModifiers() && (!MouseButtonsDown() || (state.busy && IsOwnedClickHold(state)))
 
-ClearHaltedPhase(state) {
-    if !OwnsCycle(state) || !state.halted || state.busy
-        return false
+ResetCommandPhase(state, keepReadyAt := false) {
     changed := state.step != 1 || state.copied != "" || state.commandKind != ""
-        || state.recoverFocus || state.waitingStatus || state.mousePaused || state.mouseReset || state.mouseUnsafe
+        || state.recoverFocus || state.waitingStatus
     state.step := 1
     state.copied := ""
     state.commandKind := ""
     state.recoverFocus := false
     state.waitingStatus := false
+    state.restartPending := false
+    if !keepReadyAt
+        state.readyAt := 0
+    return changed
+}
+
+ReconcileCycle(state) {
+    if !OwnsCycle(state) || state.busy
+        return false
+    if state.halted
+        return ClearHaltedPhase(state)
+    if state.HasOwnProp("restartPending") && state.restartPending {
+        ResetCommandPhase(state)
+        return true
+    }
+    return ReconcileMouse(state)
+}
+
+ClearHaltedPhase(state) {
+    if !OwnsCycle(state) || !state.halted || state.busy
+        return false
+    changed := ResetCommandPhase(state) || state.mousePaused || state.mouseReset || state.mouseUnsafe
     state.mousePaused := false
     state.mouseReset := false
     state.mouseUnsafe := false
@@ -707,11 +737,7 @@ ReconcileMouse(state) {
     if state.mouseReset {
         ; Ordinary mouse input abandons this command. Releasing a mouse
         ; button sends nothing; a new physical step must prepare fresh input.
-        state.step := 1
-        state.copied := ""
-        state.commandKind := ""
-        state.recoverFocus := false
-        state.waitingStatus := false
+        ResetCommandPhase(state)
     }
     state.mousePaused := false
     state.paused := false
@@ -762,7 +788,7 @@ ToggleCycle(*) {
             busy: false, copied: "", commandKind: "", paused: false, recoverFocus: false, waitingStatus: false,
             mousePaused: false, mouseReset: false, mouseUnsafe: false,
             halted: false, haltReason: "",
-            inviteAttempts: 0, lastStepAt: A_TickCount
+            inviteAttempts: 0, lastStepAt: A_TickCount, readyAt: 0, restartPending: false, sendingStep: 0, foreground: true
         }
         cycles[hwnd] := state
         SetTimer(WatchFocus, 75)
@@ -800,17 +826,19 @@ WatchFocus() {
         if !IsTrackedWindow(state) {
             closed.Push(state)
         } else {
-            mouseChanged := ReconcileMouse(state)
-            idleChanged := RefreshStepIdle(state)
-            if !WinActive("ahk_id " hwnd)
+            phaseChanged := ReconcileCycle(state)
+            active := WinActive("ahk_id " hwnd)
+            returned := active && (!state.HasOwnProp("foreground") || !state.foreground)
+            state.foreground := !!active
+            if !active
                 PauseCycle(state)
             else if state.halted {
-                if !state.busy && (mouseChanged || idleChanged || NeedsClickPanel(state))
+                if !state.busy && (returned || phaseChanged || NeedsClickPanel(state))
                     ShowStep(state)
             } else if state.paused && !state.busy && !state.mousePaused && !MouseButtonsDown() && !GetKeyState("Alt", "P") {
                 state.paused := false
                 ShowStep(state)
-            } else if (mouseChanged || idleChanged) && !state.busy && !state.paused {
+            } else if phaseChanged && !state.busy && !state.paused {
                 ShowStep(state)
             }
         }
@@ -830,6 +858,18 @@ PauseCycle(state) {
     if IsObject(stepOwner) && stepOwner == state
         stepOwner := 0
     CancelClickPress(state)
+    if !state.halted && (state.step > 1 || state.recoverFocus) {
+        sendingChat := state.HasOwnProp("sendingStep") && state.sendingStep >= 4
+        finalSent := state.HasOwnProp("sendingStep") && state.sendingStep == 6
+        if (state.step >= 5 || sendingChat) && !finalSent {
+            HaltCycle(state, "WoW lost focus while chat input could be open.")
+            return
+        }
+        if state.busy
+            state.restartPending := true
+        else
+            ResetCommandPhase(state)
+    }
     if !state.paused {
         state.paused := true
         if !InArmedWindow()
@@ -874,8 +914,7 @@ MarkStepDown(*) {
     state := ActiveCycle()
     if !IsObject(state) || !IsCurrent(state) || state.busy
         return
-    ReconcileMouse(state)
-    RefreshStepIdle(state)
+    ReconcileCycle(state)
     if state.halted {
         ShowStep(state)
         return
@@ -899,7 +938,7 @@ ReleaseStep(*) {
 }
 
 RunStep(state) {
-    RefreshStepIdle(state)
+    ReconcileCycle(state)
     if !CanSend(state) || HasModifiers() || state.busy
         return
 
@@ -908,18 +947,20 @@ RunStep(state) {
     try Advance(state)
     catch {
         if OwnsCycle(state)
-            Disarm(state, IsCurrent(state) ? "Stopped. Check WoW and re-arm with " ArmLabel() "." : "")
+            HaltCycle(state, "Windows could not complete this input step.")
     } finally {
         state.busy := false
-        RefreshStepIdle(state)
-        ClearHaltedPhase(state)
+        ReconcileCycle(state)
     }
 }
 
 SendStepInput(state, keys) {
     if !CanSend(state)
         return false
-    SendEvent(keys)
+    state.sendingStep := state.step
+    try SendEvent(keys)
+    finally state.sendingStep := 0
+    state.readyAt := A_TickCount + 150
     if CanSend(state)
         return true
     if IsCurrent(state) && (state.mousePaused || MouseButtonsDown()) {
@@ -928,20 +969,34 @@ SendStepInput(state, keys) {
         ; its final-attempt accounting, then stop before advancing stages.
         return true
     }
-    if OwnsCycle(state)
-        Disarm(state, "Switched windows during input. Check WoW and re-arm with " ArmLabel() ".")
-    return false
+    if OwnsCycle(state) {
+        if state.step == 4 || state.step == 5 {
+            HaltCycle(state, HasModifiers() ? "A modifier key interrupted chat input." : "WoW lost focus during chat input.")
+        } else {
+            state.restartPending := true
+            state.paused := true
+        }
+    }
+    ; The key was already injected. Retain final-attempt telemetry even if
+    ; a callback retired this cycle; this never means an invite succeeded.
+    return true
 }
 
-RefreshStepIdle(state) {
-    ; A physical step advances the workflow; elapsed idle time sends nothing
-    ; and does not discard the player's current copy/chat stage.
-    return false
+WaitForInput(state) {
+    if !CanSend(state)
+        return false
+    if state.HasOwnProp("readyAt") && state.readyAt > A_TickCount
+        Sleep(Min(150, state.readyAt - A_TickCount))
+    return CanSend(state)
 }
 
 Advance(state) {
     global inviteMacroKey
-    if !CanSend(state)
+    if Type(state.step) != "Integer" || state.step < 1 || state.step > 6 {
+        HaltCycle(state, "The helper lost its place in the input sequence.")
+        return
+    }
+    if !WaitForInput(state)
         return
     if state.recoverFocus && !state.waitingStatus {
         HaltCycle(state, "The current input focus could not be confirmed.")
@@ -952,9 +1007,7 @@ Advance(state) {
         ; Unknown focus never uses Escape as an automatic recovery attempt.
         if !SendStepInput(state, "{Esc}")
             return
-        state.recoverFocus := false
-        state.waitingStatus := false
-        state.step := 1
+        ResetCommandPhase(state, true)
         ShowStep(state, "Escape sent. The next tap requests a fresh command.")
         return
     }
@@ -967,17 +1020,21 @@ Advance(state) {
             beforeCopy := ClipboardSequence()
             if !CanSend(state)
                 return
-            SendEvent("^c")
+            if !SendStepInput(state, "^c")
+                return
             copyResult := ReadNewCommand(state, beforeCopy)
             if copyResult != "copied" {
-                if CanSend(state) && (copyResult == "invalid" || copyResult == "timeout" || copyResult == "waiting") {
-                    if copyResult != "waiting" {
-                        HaltCycle(state, "No fresh command or owned waiting status was copied.")
+                if CanSend(state) && (copyResult == "invalid" || copyResult == "timeout" || copyResult == "empty" || copyResult == "waiting") {
+                    if copyResult == "timeout" || copyResult == "empty" {
+                        ResetCommandPhase(state)
+                        ShowStep(state, "No fresh copy yet. Tap again to request a fresh action. No command was pasted or sent.")
                         return
                     }
-                    state.step := 1
-                    state.copied := ""
-                    state.commandKind := ""
+                    if copyResult == "invalid" {
+                        HaltCycle(state, "Copied text was not an invite, scan, reload or owned waiting status.")
+                        return
+                    }
+                    ResetCommandPhase(state, true)
                     state.recoverFocus := true
                     state.waitingStatus := true
                     ShowStep(state, "The addon is waiting. Finish this input step with Escape, then retry when ready.")
@@ -985,9 +1042,10 @@ Advance(state) {
                 return
             }
         case 3, 4, 6:
+            inviteAttempt := state.step == 6 && state.commandKind == "invite"
             if !SendStepInput(state, "{Enter}")
                 return
-            if state.step == 6 && state.commandKind == "invite"
+            if inviteAttempt
                 state.inviteAttempts += 1
         case 5:
             if !PasteCommand(state) {
@@ -1000,13 +1058,20 @@ Advance(state) {
         return
     state.step := state.step == 6 ? 1 : state.step + 1
     if state.step == 1 {
-        state.copied := ""
-        state.commandKind := ""
+        ResetCommandPhase(state, true)
     }
     ShowStep(state)
 }
 
 ClipboardSequence() => DllCall("User32\GetClipboardSequenceNumber", "UInt")
+
+ReadClipboardSnapshot() {
+    sequence := ClipboardSequence()
+    try text := A_Clipboard
+    catch
+        return false
+    return sequence == ClipboardSequence() ? {sequence: sequence, text: text} : false
+}
 
 CommandKind(text) {
     if text == "/reload"
@@ -1038,12 +1103,14 @@ ReadNewCommand(state, beforeCopy) {
     while A_TickCount < deadline {
         if !CanSend(state)
             return "interrupted"
-        sequence := ClipboardSequence()
-        if sequence != beforeCopy {
-            text := A_Clipboard
-            if sequence == ClipboardSequence() && CanSend(state) {
+        snapshot := ReadClipboardSnapshot()
+        if IsObject(snapshot) && snapshot.sequence != beforeCopy {
+            text := snapshot.text
+            if snapshot.sequence == ClipboardSequence() && CanSend(state) {
                 if text == "DandyRecruiter is waiting."
                     return "waiting"
+                if text == ""
+                    return "empty"
                 kind := CommandKind(text)
                 if kind == ""
                     return "invalid"
@@ -1061,8 +1128,11 @@ PasteCommand(state) {
     kind := CommandKind(state.copied)
     if kind == "" || !(kind == state.commandKind)
         return false
-    beforePaste := ClipboardSequence()
-    if A_Clipboard == state.copied && beforePaste == ClipboardSequence()
+    snapshot := ReadClipboardSnapshot()
+    if !IsObject(snapshot)
+        return false
+    beforePaste := snapshot.sequence
+    if snapshot.text == state.copied && beforePaste == ClipboardSequence()
         return SendStepInput(state, "^v")
 
     savedClipboard := ClipboardAll()
@@ -1075,7 +1145,8 @@ PasteCommand(state) {
     } finally {
         ; Give WoW time to read the paste before restoring the user's clipboard.
         Sleep(150)
-        if inviteSequence == ClipboardSequence() && A_Clipboard == state.copied
+        current := ReadClipboardSnapshot()
+        if IsObject(current) && current.sequence == inviteSequence && current.text == state.copied
             && inviteSequence == ClipboardSequence()
             A_Clipboard := savedClipboard
     }

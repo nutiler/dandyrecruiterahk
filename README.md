@@ -6,15 +6,15 @@ GitHub hosts the source, instructions and version history. **Code** shows the sc
 
 [Download the latest helper](https://github.com/nutiler/dandyrecruiterahk/releases/latest/download/DandyRecruiterHelper.ahk) | [Latest release](https://github.com/nutiler/dandyrecruiterahk/releases/latest) | [Version history](https://github.com/nutiler/dandyrecruiterahk/commits/main)
 
-## Version 1.1.1
+## Version 1.1.2
 
-**1.1.1**, build **2026-11-17 stable-1.1.1 simple-steps**, restores the simple six-tap clipboard workflow. Mouse movement does not pause it, ordinary gaps do not trigger an idle timeout, and no screen pixels or input strip are required. Use **DandyRecruiter 1.4.0 or later** from [CurseForge](https://www.curseforge.com/wow/addons/dandyrecruiter) for the matching workflow described below.
+**1.1.2**, build **2026-11-17 stable-1.1.2 step-engine**, improves copying, rapid-tap timing and recovery while keeping the simple six-tap workflow. Mouse movement does not pause it, ordinary gaps do not trigger an idle timeout, and no screen pixels or input strip are required. Use **DandyRecruiter 1.4.0 or later** from [CurseForge](https://www.curseforge.com/wow/addons/dandyrecruiter) for the matching workflow described below.
 
 ## Setup
 
 1. Install [AutoHotkey v2](https://www.autohotkey.com/). AutoHotkey v1 is incompatible.
 2. Install DandyRecruiter, use a character with guild invite permission and save an enabled recruitment message.
-3. Exit older helper copies using their tray menu, then run **DandyRecruiterHelper.ahk**. Check for **simple-steps** in its tray tooltip. Editing the file does not update a running copy.
+3. Exit older helper copies using their tray menu, then run **DandyRecruiterHelper.ahk**. Check for **step-engine** in its tray tooltip. Editing the file does not update a running copy.
 4. In Setup, choose a **Step key** and **WoW Recruit next key**, then Save. Defaults are Up/F8. For a one-button keypad sending Left, choose **Left/F8**. Existing saved choices are preserved.
 5. The addon normally supplies F8. If choosing another action key, assign that same key under **Key Bindings > Dandy Suite > DandyRecruiter > Recruit next**. No action-bar macro is needed.
 6. Focus WoW, close unfinished chat/copy input and press Ctrl+Alt+your step key once. For Left, use **Ctrl+Alt+Left**. Release the full chord, then tap the step key about once a second.
@@ -32,6 +32,8 @@ The helper detects Forever installations on different drives and sends nothing t
 | 5 | Paste the matching command |
 | 6 | Submit after checking the chat line |
 
+Brief UI settling lets WoW update before the next separate input, including after final submission.
+
 The next tap starts another cycle. Holding a key does not repeat steps. Busy taps are discarded rather than queued, and final Enter always needs its own tap. A one-button keypad should send one ordinary key press and release per physical tap.
 
 The same cycle handles validated `/ginvite`, `/who`, and exactly `/reload` when the matching addon prepares a stuck-scan recovery. Scan and reload commands do not count as invitation attempts. Native/server waits remain in force. A freshly copied **DandyRecruiter is waiting.** status uses one separate Escape tap before requesting another action; the status is never pasted or sent.
@@ -44,9 +46,13 @@ Mouse movement does not pause the helper. Step taps while a main mouse button is
 
 There is no idle timeout between taps. A clean or partially completed sequence waits for the next press. Keep the expected copy/chat input focused while advancing it. After a mouse interruption, close any unfinished native chat before starting fresh if it remains open. The addon can reselect its own current copy command on F8 without whispering another player.
 
-An unknown copy or unverified paste still stops rather than guessing focus or spraying Escape. Close unfinished input, then click the stopped button or use Ctrl+Alt+your step key to re-arm. The attempt counter is retained. Foreground window/PID, modifier, strict command and clipboard checks remain.
+A missing or empty copy returns to step one and stays armed: the next tap requests a fresh action. Temporary clipboard read failures retry without sending another copy key. Old clipboard text never authorizes a command or waiting step.
 
-**Esc** disarms an active cycle. **Alt-Tab** pauses that client. Tray **Setup** changes controls, **Show click button** toggles the floating widget, and **Exit** stops the helper. Windowed or Windowed Fullscreen may be needed for the floating widget to appear above WoW.
+An unrecognized nonempty copy or unverified paste still stops. Close unfinished input, then click the stopped button or use Ctrl+Alt+your step key to re-arm. The client, reason and attempt counter are retained after Windows input errors. Foreground window/PID, modifier, strict command and clipboard checks remain.
+
+Changing clients before chat starts retires the old copy/WAIT work; after returning, the next tap requests a fresh action. If native chat could already be open, the helper stops with a cleanup reason. A final Enter already injected keeps its attempt count and clears to a fresh cycle. A stopped reason is shown when you return even if the floating button is hidden.
+
+**Esc** disarms an active cycle. **Alt-Tab** pauses that client using the recovery rules above. Tray **Setup** changes controls, **Show click button** toggles the floating widget, and **Exit** stops the helper. Windowed or Windowed Fullscreen may be needed for the floating widget to appear above WoW.
 
 ## Counts and cooldowns
 

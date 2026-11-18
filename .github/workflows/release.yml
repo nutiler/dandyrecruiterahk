@@ -1,14 +1,18 @@
 name: Publish reviewed AHK release
 
-# Publication requires a fresh owner request and manual workflow dispatch.
-# Pushing source, README or workflow changes never publishes a release.
+# One-time push publication is restricted to this exact owner-requested
+# stable release, reviewed commit message and previous main revision.
+# Restore the manual-only workflow after verified publication.
 "on":
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/release.yml]
 
 permissions: {}
 
 concurrency:
-  group: dandyrecruiterahk-v1.1.1
+  group: dandyrecruiterahk-v1.1.2
   cancel-in-progress: false
 
 jobs:
@@ -16,7 +20,10 @@ jobs:
     if: >-
       github.repository == 'nutiler/dandyrecruiterahk' &&
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.before == '3488a3fadb0e717d0b2cfddd48cbd600969867ea' &&
+        github.event.head_commit.message == 'Publish requested DandyRecruiterAHK 1.1.2 stable release'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -38,10 +45,10 @@ jobs:
           import urllib.request
 
           repo = "nutiler/dandyrecruiterahk"
-          version = "1.1.1"
+          version = "1.1.2"
           tag = "v" + version
           filename = "DandyRecruiterHelper.ahk"
-          expected = "7db25bf186d3f7da98fc961cb35e5631c7e0fab14a1ffc90dec285e373f7fff6"
+          expected = "4d00022810d37b1d49b025914cb59852949e7ba1b3fb8700ed85105eb12ea442"
           commit = os.environ["RELEASE_COMMIT"]
           token = os.environ["GH_TOKEN"]
           assert re.fullmatch(r"[0-9a-f]{40}", commit), "Invalid commit"
@@ -94,9 +101,17 @@ jobs:
           notes = "\n".join([
               "Download **DandyRecruiterHelper.ahk** under **Assets** below. No source-code ZIP is needed.",
               "",
-              "Stable 1.1.1 restores the simple six-tap clipboard flow. Mouse movement does not pause it, there is no idle timeout and no screen pixels or input strip are required. One script includes the floating button and keyboard controls; run one helper at a time.",
+              "Stable 1.1.2 refactors the six-tap step engine for more reliable copying, rapid-tap timing and recovery. One script includes the floating button and keyboard controls; run one helper at a time. There is no idle timeout or helper invite limiter, and no screen pixels or input strip are required.",
               "",
               "Use DandyRecruiter 1.4.0 or later from CurseForge for the matching scan/invite workflow. The addon owns candidates, messages, contact protection, preventive pacing and native-error recovery. This helper has no independent invite limiter or pause checkbox.",
+              "",
+              "Changes in 1.1.2:",
+              "- Missing or empty copies return to an armed fresh-action retry without re-arming.",
+              "- Temporary clipboard read failures retry without sending extra copy keys; stale text is never reused.",
+              "- Brief UI settling keeps rapid taps from racing field preparation and native chat closure.",
+              "- Pre-chat focus changes retire old copy/WAIT work; potentially open chat stops with a cleanup reason.",
+              "- Windows input errors retain the client, reason and attempt count. Already injected final Enter keeps its count without a sticky stop.",
+              "- Returning focus shows a stopped reason even with the floating button hidden. Reload has its own final-button label.",
               "",
               "Optional Windows helper for the separately installed DandyRecruiter addon in WoW Forever. Requires AutoHotkey v2.",
               "",
@@ -109,13 +124,13 @@ jobs:
               "The floating button keeps WoW focused and names the next action. Close it with X or use tray Show click button to hide it for this session. Use Windowed or Windowed Fullscreen WoW if an exclusive fullscreen window covers the helper.",
               "Extra clicks while an action is still running are ignored and never queued.",
               "",
-              "Esc disarms an active cycle. Alt-Tab pauses that client. Holding a key/button does not repeat and extra busy taps are discarded. There is no idle timeout between taps. Keep the expected copy/chat input focused while advancing it.",
+              "Esc disarms an active cycle. Alt-Tab retires pre-chat work; possible open chat requires cleanup before re-arming. Holding a key/button does not repeat and extra busy taps are discarded. There is no idle timeout between taps. Keep the expected copy/chat input focused while advancing it.",
               "",
               "The matching addon holds new recruitment for 50 seconds after ten counted native invite submissions and excludes its attributed offline outcomes. A partial batch resets after 30 seconds without a counted submission; an active cooldown finishes in full. Scan commands, whispers and waiting steps do not count. Native rate errors retain their separate 50-second recovery. The Inviter displays the reason and countdown; expiry sends nothing automatically. These are local policies, and WoW still enforces its own limits.",
               "",
               "Mouse movement does not affect the sequence. Step taps while a main mouse button is held are ignored. Releasing ordinary mouse input silently discards an unfinished cycle without sending a key; the next physical step requests a fresh command. Close any unfinished native chat before restarting if it remains open. Floating-button clicks retain their normal step behavior.",
               "",
-              "A fresh waiting status uses one separate Escape step before retrying and is never pasted or sent. Unknown copy or unverifiable paste still stops input. Close unfinished native input yourself, then click the stopped helper button or press the arm shortcut. A stopped-button click only re-arms; the next click starts a fresh cycle. The helper attempt total is retained and addon pacing is unchanged.",
+              "A fresh waiting status uses one separate Escape step before retrying and is never pasted or sent. Missing/empty copy retries on the next fresh action tap; unrecognized nonempty copy or unverifiable paste still stops input. Close unfinished native input yourself, then click the stopped helper button or press the arm shortcut. A stopped-button click only re-arms; the next click starts a fresh cycle. The helper attempt total is retained and addon pacing is unchanged.",
               "",
               "Use tray Setup to change controls. Saving disarms every client. The helper shows final invite attempts per armed client without claiming confirmed invitations. The addon is installed separately and keeps its own count for pacing. A command already copied or pasted into native chat cannot be revoked.",
               "",
